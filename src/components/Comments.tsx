@@ -2,7 +2,17 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Send, Trash2, MessageCircle } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
-import { supabase } from '@/integrations/supabase/client';
+import { 
+  collection, 
+  query, 
+  where, 
+  orderBy, 
+  getDocs, 
+  addDoc, 
+  deleteDoc, 
+  doc 
+} from 'firebase/firestore';
+import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -33,14 +43,18 @@ export function Comments({ recipeId }: CommentsProps) {
 
   const fetchComments = async () => {
     try {
-      const { data, error } = await supabase
-        .from('comments')
-        .select('*')
-        .eq('recipe_id', recipeId)
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      setComments(data || []);
+      const commentsRef = collection(db, 'comments');
+      const q = query(
+        commentsRef,
+        where('recipe_id', '==', recipeId),
+        orderBy('created_at', 'desc')
+      );
+      const snapshot = await getDocs(q);
+      const commentsData = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      })) as Comment[];
+      setComments(commentsData);
     } catch (error) {
       console.error('Error fetching comments:', error);
     } finally {
@@ -54,14 +68,13 @@ export function Comments({ recipeId }: CommentsProps) {
 
     setSubmitting(true);
     try {
-      const { error } = await supabase.from('comments').insert({
+      await addDoc(collection(db, 'comments'), {
         recipe_id: recipeId,
-        user_id: user.id,
+        user_id: user.uid,
         content: newComment.trim(),
-        author_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'Anonymous',
+        author_name: user.displayName || user.email?.split('@')[0] || 'Anonymous',
+        created_at: new Date().toISOString(),
       });
-
-      if (error) throw error;
 
       setNewComment('');
       fetchComments();
@@ -76,14 +89,7 @@ export function Comments({ recipeId }: CommentsProps) {
 
   const handleDelete = async (commentId: string) => {
     try {
-      const { error } = await supabase
-        .from('comments')
-        .delete()
-        .eq('id', commentId)
-        .eq('user_id', user?.id);
-
-      if (error) throw error;
-
+      await deleteDoc(doc(db, 'comments', commentId));
       setComments(comments.filter((c) => c.id !== commentId));
       toast.success('Comment deleted');
     } catch (error) {
@@ -176,7 +182,7 @@ export function Comments({ recipeId }: CommentsProps) {
                     </p>
                   </div>
 
-                  {user?.id === comment.user_id && (
+                  {user?.uid === comment.user_id && (
                     <button
                       onClick={() => handleDelete(comment.id)}
                       className="p-2 text-muted-foreground hover:text-destructive transition-colors"

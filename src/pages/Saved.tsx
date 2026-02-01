@@ -5,7 +5,16 @@ import { Heart, Trash2, ChefHat, ArrowRight } from 'lucide-react';
 import { Navbar } from '@/components/Navbar';
 import { RecipeCardSkeleton } from '@/components/SkeletonLoader';
 import { Button } from '@/components/ui/button';
-import { supabase } from '@/integrations/supabase/client';
+import { 
+  collection, 
+  query, 
+  where, 
+  orderBy, 
+  getDocs, 
+  deleteDoc, 
+  doc 
+} from 'firebase/firestore';
+import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 
@@ -33,14 +42,18 @@ export default function SavedPage() {
 
   const fetchFavorites = async () => {
     try {
-      const { data, error } = await supabase
-        .from('favorites')
-        .select('*')
-        .eq('user_id', user!.id)
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-      setFavorites(data || []);
+      const favoritesRef = collection(db, 'favorites');
+      const q = query(
+        favoritesRef,
+        where('user_id', '==', user!.uid),
+        orderBy('created_at', 'desc')
+      );
+      const snapshot = await getDocs(q);
+      const favoritesData = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      })) as Favorite[];
+      setFavorites(favoritesData);
     } catch (error) {
       console.error('Error fetching favorites:', error);
       toast.error('Failed to load favorites');
@@ -51,13 +64,7 @@ export default function SavedPage() {
 
   const removeFavorite = async (id: string) => {
     try {
-      const { error } = await supabase
-        .from('favorites')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
-
+      await deleteDoc(doc(db, 'favorites', id));
       setFavorites(favorites.filter((f) => f.id !== id));
       toast.success('Removed from favorites');
     } catch (error) {

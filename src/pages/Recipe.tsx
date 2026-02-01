@@ -9,7 +9,17 @@ import { Comments } from '@/components/Comments';
 import { RecipeDetailSkeleton } from '@/components/SkeletonLoader';
 import { Button } from '@/components/ui/button';
 import { getRecipeDetails, type RecipeDetails } from '@/lib/tastyService';
-import { supabase } from '@/integrations/supabase/client';
+import { 
+  collection, 
+  query, 
+  where, 
+  getDocs, 
+  addDoc, 
+  deleteDoc, 
+  doc,
+  setDoc
+} from 'firebase/firestore';
+import { db } from '@/lib/firebase';
 import { useAuth } from '@/hooks/useAuth';
 import { toast } from 'sonner';
 
@@ -20,6 +30,7 @@ export default function RecipePage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isFavorite, setIsFavorite] = useState(false);
+  const [favoriteDocId, setFavoriteDocId] = useState<string | null>(null);
   const [userRating, setUserRating] = useState(0);
   const [averageRating, setAverageRating] = useState(0);
   const [totalRatings, setTotalRatings] = useState(0);
@@ -51,35 +62,46 @@ export default function RecipePage() {
   };
 
   const checkFavorite = async () => {
-    const { data } = await supabase
-      .from('favorites')
-      .select('id')
-      .eq('user_id', user!.id)
-      .eq('recipe_id', id!)
-      .single();
-    setIsFavorite(!!data);
+    const favoritesRef = collection(db, 'favorites');
+    const q = query(
+      favoritesRef,
+      where('user_id', '==', user!.uid),
+      where('recipe_id', '==', id!)
+    );
+    const snapshot = await getDocs(q);
+    if (!snapshot.empty) {
+      setIsFavorite(true);
+      setFavoriteDocId(snapshot.docs[0].id);
+    } else {
+      setIsFavorite(false);
+      setFavoriteDocId(null);
+    }
   };
 
   const fetchUserRating = async () => {
-    const { data } = await supabase
-      .from('ratings')
-      .select('rating')
-      .eq('user_id', user!.id)
-      .eq('recipe_id', id!)
-      .single();
-    if (data) setUserRating(data.rating);
+    const ratingsRef = collection(db, 'ratings');
+    const q = query(
+      ratingsRef,
+      where('user_id', '==', user!.uid),
+      where('recipe_id', '==', id!)
+    );
+    const snapshot = await getDocs(q);
+    if (!snapshot.empty) {
+      const data = snapshot.docs[0].data();
+      setUserRating(data.rating);
+    }
   };
 
   const fetchAverageRating = async () => {
-    const { data } = await supabase
-      .from('ratings')
-      .select('rating')
-      .eq('recipe_id', id!);
+    const ratingsRef = collection(db, 'ratings');
+    const q = query(ratingsRef, where('recipe_id', '==', id!));
+    const snapshot = await getDocs(q);
     
-    if (data && data.length > 0) {
-      const avg = data.reduce((sum, r) => sum + r.rating, 0) / data.length;
+    if (!snapshot.empty) {
+      const ratings = snapshot.docs.map((doc) => doc.data().rating as number);
+      const avg = ratings.reduce((sum, r) => sum + r, 0) / ratings.length;
       setAverageRating(Math.round(avg * 10) / 10);
-      setTotalRatings(data.length);
+      setTotalRatings(ratings.length);
     }
   };
 
@@ -90,22 +112,21 @@ export default function RecipePage() {
     }
 
     try {
-      if (isFavorite) {
-        await supabase
-          .from('favorites')
-          .delete()
-          .eq('user_id', user.id)
-          .eq('recipe_id', id!);
+      if (isFavorite && favoriteDocId) {
+        await deleteDoc(doc(db, 'favorites', favoriteDocId));
         setIsFavorite(false);
+        setFavoriteDocId(null);
         toast.success('Removed from favorites');
       } else {
-        await supabase.from('favorites').insert({
-          user_id: user.id,
+        const docRef = await addDoc(collection(db, 'favorites'), {
+          user_id: user.uid,
           recipe_id: id!,
           recipe_title: recipe?.title || '',
           recipe_image: recipe?.image || null,
+          created_at: new Date().toISOString(),
         });
         setIsFavorite(true);
+        setFavoriteDocId(docRef.id);
         toast.success('Added to favorites');
       }
     } catch (error) {
@@ -121,17 +142,15 @@ export default function RecipePage() {
     }
 
     try {
-      const { error } = await supabase
-        .from('ratings')
-        .upsert({
-          user_id: user.id,
-          recipe_id: id!,
-          rating,
-        }, {
-          onConflict: 'user_id,recipe_id',
-        });
-
-      if (error) throw error;
+      // Use a composite ID for upsert behavior
+      const ratingId = `${user.uid}_${id}`;
+      await setDoc(doc(db, 'ratings', ratingId), {
+        user_id: user.uid,
+        recipe_id: id!,
+        rating,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
 
       setUserRating(rating);
       fetchAverageRating();
